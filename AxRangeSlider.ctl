@@ -29,15 +29,18 @@ Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 '-UC-VB6-----------------------------
 'UC Name  : AxRangeSlider
-'Version  : 0.08.01
+'Version  : 0.09.03
 'Editor   : David Rojas [AxioUK]
-'Date     : 07/08/2021
+'Date     : 16/08/2021
 '------------------------------------
 Option Explicit
 
+Private Const VERS As String = "0.09.03"
+
 Private Declare Function MulDiv Lib "kernel32.dll" (ByVal nNumber As Long, ByVal nNumerator As Long, ByVal nDenominator As Long) As Long
-Private Declare Function SelectObject Lib "gdi32" (ByVal hDC As Long, ByVal hObject As Long) As Long
 Private Declare Function SetRECL Lib "user32" Alias "SetRect" (lpRect As RECTL, ByVal X As Long, ByVal Y As Long, ByVal W As Long, ByVal H As Long) As Long
+Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As Long) As Long
+Private Declare Function SelectObject Lib "gdi32" (ByVal hDC As Long, ByVal hObject As Long) As Long
 
 Private Declare Function GetSysColor Lib "user32.dll" (ByVal nIndex As Long) As Long
 Private Declare Function GetDC Lib "user32.dll" (ByVal hwnd As Long) As Long
@@ -63,8 +66,34 @@ Private Declare Function GdipSetSmoothingMode Lib "GdiPlus.dll" (ByVal Graphics 
 Private Declare Function GdipCreateSolidFill Lib "gdiplus" (ByVal RGBA As Long, ByRef Brush As Long) As Long
 Private Declare Function GdipDrawLine Lib "GdiPlus.dll" (ByVal Graphics As Long, ByVal Pen As Long, ByVal X1 As Single, ByVal Y1 As Single, ByVal X2 As Single, ByVal Y2 As Single) As Long
 '---
+Private Declare Function CreateFontIndirect Lib "gdi32" Alias "CreateFontIndirectA" (lpLogFont As LOGFONT) As Long
+Private Declare Function TextOutW Lib "gdi32" (ByVal hDC As Long, ByVal X As Long, ByVal Y As Long, ByVal lpString As Long, ByVal nCount As Long) As Long
 Private Declare Function DrawTextA Lib "user32.dll" (ByVal hDC As Long, ByVal lpStr As String, ByVal nCount As Long, lpRect As RECT, ByVal wFormat As Long) As Long
-'Private Declare Function DrawTextW Lib "user32.dll" (ByVal hDC As Long, lpStr As Long, ByVal nCount As Long, ByRef lpRect As RECT, ByVal wFormat As Long) As Long
+Private Declare Function GetObjectAPI Lib "gdi32" Alias "GetObjectA" (ByVal hObject As Long, ByVal nCount As Long, lpObject As Any) As Long
+Private Declare Function GetStockObject Lib "gdi32" (ByVal nIndex As Long) As Long
+Private Declare Function GetCurrentObject Lib "gdi32" (ByVal hDC As Long, ByVal uObjectType As Long) As Long
+
+Private Const LF_FACESIZE = 32
+Private Const SYSTEM_FONT = 13
+Private Const OBJ_FONT As Long = 6&
+
+Private Type LOGFONT
+        lfHeight As Long
+        lfWidth As Long
+        lfEscapement As Long
+        lfOrientation As Long
+        lfWeight As Long
+        lfItalic As Byte
+        lfUnderline As Byte
+        lfStrikeOut As Byte
+        lfCharSet As Byte
+        lfOutPrecision As Byte
+        lfClipPrecision As Byte
+        lfQuality As Byte
+        lfPitchAndFamily As Byte
+        lfFaceName(LF_FACESIZE - 1) As Byte
+End Type
+
 '---
 'Private Declare Function GetCursorPos Lib "user32.dll" (ByRef lpPoint As POINTL) As Long
 'Private Declare Function WindowFromPoint Lib "user32.dll" (ByVal xPoint As Long, ByVal yPoint As Long) As Long
@@ -90,9 +119,14 @@ Private Type RECTS
     Height As Single
 End Type
 
-Private Type Points
+Private Type POINTS
    X As Single
    Y As Single
+End Type
+
+Private Type POINTL
+   X As Long
+   Y As Long
 End Type
 
 Private Type GDIPlusStartupInput
@@ -139,6 +173,11 @@ Public Enum eDateValueI
    byYear
 End Enum
 
+Public Enum eStyleLine
+   stInner
+   stOuter
+End Enum
+
 'Constants
 'Private Const CombineModeExclude As Long = &H4
 Private Const WrapModeTileFlipXY = &H3
@@ -181,15 +220,20 @@ Private m_ValuesLineColor As OLE_COLOR
 Private m_ColorSelector As OLE_COLOR
 Private m_BorderWidth   As Long
 Private m_CornerCurve   As Long
+Private m_ValuesVisible As Boolean
+Private m_ValueRotation As Single
+Private m_BarThickness  As Long
+Private m_BarMargin     As Long
 
 Private m_ValueType As eTypeValue
 Private m_DateValueIntervalBy As eDateValueI
+Private m_ValueLine As eStyleLine
 
 Private m_Font1 As StdFont
 Private m_Font2 As StdFont
 Private m_Style As pStyle
 Private mActive As coMark
-Private iPts()  As Points
+Private iPts()  As POINTS
 Private pPts()  As pPoints
 Private lMark   As RECTL
 Private rMark   As RECTL
@@ -209,6 +253,31 @@ Private rPos   As Long
 Private lBar   As Long
 Private rBar   As Long
 
+Private Function AddString2(sCaption As String, X As Long, Y As Long, Rotation As Single, TextColor As OLE_COLOR) As Boolean
+Dim LF As LOGFONT
+Dim FontToUse As Long
+Dim oldFont As Long
+Dim RCT As RECT
+
+With UserControl
+  oldFont = GetCurrentObject(.hDC, OBJ_FONT)
+  GetObjectAPI oldFont, Len(LF), LF
+  GetObjectAPI oldFont, Len(LF), LF
+  
+  LF.lfEscapement = Rotation * 10
+  LF.lfOrientation = LF.lfEscapement
+
+  FontToUse = CreateFontIndirect(LF)
+  oldFont = SelectObject(.hDC, FontToUse)
+    
+  .ForeColor = TextColor
+  TextOutW .hDC, X, Y, StrPtr(sCaption), Len(sCaption)
+  SelectObject .hDC, oldFont
+  DeleteObject FontToUse
+End With
+
+ErrorTextRotate:
+End Function
 
 Private Function AddString(mCaption As String, RCT As RECT, mFont As Font, TextColor As OLE_COLOR)
 Dim pFont       As IFont
@@ -218,7 +287,7 @@ On Error GoTo ErrF
 With UserControl
   Set pFont = mFont
   lFontOld = SelectObject(.hDC, pFont.hFont)
-
+  
   .ForeColor = TextColor
     
   DrawTextA .hDC, mCaption, -1, RCT, DT_CENTER
@@ -268,24 +337,29 @@ With UserControl
   .BackColor = m_BackColor
   
   'draw Background Bar
-  SetRECL REC, 10, .ScaleHeight / 3, .ScaleWidth - 20, .ScaleHeight / 3
+  SetRECL REC, m_BarMargin, 21, (.ScaleWidth - (m_BarMargin * 2)), m_BarThickness ' (.ScaleHeight / 3)
   DrawRoundRect hGraphics, REC, RGBA(m_GradientColor1, 100), RGBA(m_GradientColor2, 100), RGBA(m_BorderColor, 100), m_BorderWidth, m_CornerCurve
   'Get Points Values
   tPoints = fSetPoints(REC, m_Min, m_Max)
 
-  SetRECL REC, 10, (.ScaleHeight / 2), (.ScaleWidth - 20), (.ScaleHeight / 3)
-  DrawPoints hGraphics, REC, m_ValuesLineColor, m_BorderWidth, m_ForeColor1, tPoints, pHorizontal
+  If m_ValueLine = stOuter Then
+    SetRECL REC, m_BarMargin, 21 + m_BarThickness, (.ScaleWidth - (m_BarMargin * 2)), m_BarThickness
+    DrawPoints hGraphics, REC, m_ValuesLineColor, m_BorderWidth, m_ForeColor1, tPoints, pHorizontal
+  Else
+    SetRECL REC, m_BarMargin, 21, (.ScaleWidth - (m_BarMargin * 2)), m_BarThickness
+    DrawPoints hGraphics, REC, m_ValuesLineColor, m_BorderWidth, m_ForeColor1, tPoints, pHorizontal
+  End If
   
   'Draw Slider Bar
   If lPos < rPos Then
-    SetRECL Bar, lPos, (.ScaleHeight / 3) + 1, rPos - lPos, (.ScaleHeight / 3) - 2
+    SetRECL Bar, lPos, 22, rPos - lPos, m_BarThickness - 2
   Else
-    SetRECL Bar, rPos, (.ScaleHeight / 3) + 1, lPos - rPos, (.ScaleHeight / 3) - 2
+    SetRECL Bar, rPos, 22, lPos - rPos, m_BarThickness - 2
   End If
   
   lBar = Bar.Left
   rBar = Bar.Width
-  If mActive = cmBar Then SetRECL Bar, BarPos - (rBar / 2), (.ScaleHeight / 3) + 1, rBar, (.ScaleHeight / 3) - 2
+  If mActive = cmBar Then SetRECL Bar, BarPos - (rBar / 2), 22, rBar, m_BarThickness - 2
   DrawRoundRect hGraphics, Bar, RGBA(m_ColorSelector, 50), RGBA(m_ColorSelector, 50), RGBA(m_BorderColor, 60), 1, m_CornerCurve
   'Refresh values for move Marks
   lBar = Bar.Left
@@ -296,22 +370,22 @@ With UserControl
   bW = IIf(m_ValueType = eDateValue, UserControl.TextWidth((pPts(0).Valor) & "000"), UserControl.TextWidth("0000"))
   
   If mActive = cmBar Then
-    SetRECL lMark, (lBar - (bW / 2)), (.ScaleHeight / 3) - 20, bW, 20
-    SetRECL rMark, (lBar + rBar - (bW / 2)), (.ScaleHeight / 3) - 20, bW, 20
+    SetRECL lMark, (lBar - (bW / 2)), 1, bW, 20
+    SetRECL rMark, (lBar + rBar - (bW / 2)), 1, bW, 20
   Else
-    SetRECL lMark, (lPos - (bW / 2)), (.ScaleHeight / 3) - 20, bW, 20
-    SetRECL rMark, (rPos - (bW / 2)), (.ScaleHeight / 3) - 20, bW, 20
+    SetRECL lMark, (lPos - (bW / 2)), 1, bW, 20
+    SetRECL rMark, (rPos - (bW / 2)), 1, bW, 20
   End If
   DrawBubble hGraphics, lMark, RGBA(m_BorderColor, 100), 1, RGBA(m_ColorLeftMark, 100), 2, 5, 5, coBottom
   DrawBubble hGraphics, rMark, RGBA(m_BorderColor, 100), 1, RGBA(m_ColorRightMark, 100), 2, 5, 5, coBottom
 
   'Set Marks Rects
   If mActive = cmBar Then
-    SetREC2 cpLeft, (lBar - (bW / 2)), (.ScaleHeight / 3) - 20, (lBar - (bW / 2)) + (bW), 20
-    SetREC2 cpRight, (lBar + rBar - (bW / 2)), (.ScaleHeight / 3) - 20, (lBar + rBar - (bW / 2)) + (bW), 20
+    SetREC2 cpLeft, (lBar - (bW / 2)), 2, (lBar - (bW / 2)) + (bW), 20
+    SetREC2 cpRight, (lBar + rBar - (bW / 2)), 2, (lBar + rBar - (bW / 2)) + (bW), 20
   Else
-    SetREC2 cpLeft, (lPos - (bW / 2)), (.ScaleHeight / 3) - 20, (lPos - (bW / 2)) + (bW), 20
-    SetREC2 cpRight, (rPos - (bW / 2)), (.ScaleHeight / 3) - 20, (rPos - (bW / 2)) + (bW), 20
+    SetREC2 cpLeft, (lPos - (bW / 2)), 2, (lPos - (bW / 2)) + (bW), 20
+    SetREC2 cpRight, (rPos - (bW / 2)), 2, (rPos - (bW / 2)) + (bW), 20
 
   End If
   
@@ -346,72 +420,84 @@ End Sub
 Private Sub DrawPoints(ByVal iGraphics As Long, RCT As RECTL, ColorLine As OLE_COLOR, LineWidth As Long, _
                       ColorText As OLE_COLOR, vPoints As Long, lStyle As pStyle)
 Dim I As Integer
-Dim hPen As Long
 Dim X As Single, Y As Single
 Dim W As Single, H As Single
-Dim sREC As RECT
-Dim rW As Single, stMark As String
+Dim sREC As POINTL
+Dim tW As Single, stMark As String
 Dim sSep As String, pY2 As Single
 Dim pSpace As Single, vMark As Long
-Dim sPar As Boolean
+Dim sPar As Boolean, tH As Single
 
 X = RCT.Left:  Y = RCT.Top
 W = RCT.Width: H = RCT.Height
 
-On Error GoTo zEnd
 sPar = False
 pSpace = (W / vPoints) * nScale
-'Debug.Print "pSpace:" & pSpace
 
-ReDim iPts(vPoints) As Points
-  
-rW = IIf(m_ValueType = eDateValue, UserControl.TextWidth((pPts(0).Valor) & "000"), UserControl.TextWidth("000"))
-        
+ReDim iPts(vPoints) As POINTS
+          
 For I = 0 To vPoints Step m_Interval
 
+  tW = UserControl.TextWidth(pPts(I).Valor)
+  tH = UserControl.TextHeight(pPts(I).Valor)
+
   iPts(I).X = X + (pSpace * I)
-  iPts(I).Y = Y + (H / 3)
+  iPts(I).Y = IIf(m_ValueLine = stOuter, Y + 1, Y + (H / 3))
   
-  If rW * (vPoints / Interval) > W Then
-    pY2 = IIf(sPar = False, iPts(I).Y + 20, iPts(I).Y + 10)
+  If m_ValueLine = stOuter Then
+    If tW * (vPoints / Interval) > (W - 100) Then
+      pY2 = IIf(sPar = True, Y + tH, Y + 5)
+    Else
+      pY2 = Y + 5
+    End If
   Else
-    pY2 = iPts(I).Y + 10
+      pY2 = iPts(I).Y + (H / 3) + 2 'Y + H
   End If
   
-  UserControl.Line (iPts(I).X, iPts(I).Y)-(iPts(I).X, pY2), ColorLine
-  
-  sREC.Left = iPts(I).X - 2 - (rW / 2)
-  If rW * (vPoints / Interval) > W Then
-    sREC.Top = IIf(sPar = False, iPts(I).Y + 20, iPts(I).Y + 10)
+  If m_ValueLine = stOuter Then
+    If m_ValuesVisible = True Then UserControl.Line (iPts(I).X, iPts(I).Y)-(iPts(I).X, pY2), ColorLine
   Else
-    sREC.Top = iPts(I).Y + 10
-  End If
-  sREC.Right = sREC.Left + rW + 5
-  sREC.Bottom = sREC.Top + UserControl.TextHeight("00") + 2
-  
-  Select Case m_ValueType
-    Case Is = eLetterValue
-        stMark = Chr$(Asc(m_Min) + (I))
-    Case Is = eNumValue
-        stMark = CLng(m_Min) + (I)
-    Case Is = eDateValue
-      sSep = IIf(InStr(m_Min, "-") <> 0, "-", "/")
-      'Debug.Print sSep
-      If m_DateValueIntervalBy = byDay Then
-          stMark = DateAdd("d", CDbl(I), CDate(m_Min))
-      ElseIf m_DateValueIntervalBy = byMonth Then
-          stMark = Format$(DateAdd("m", CDbl(I), CDate(m_Min)), "MM-yyyy")
-      ElseIf m_DateValueIntervalBy = byYear Then
-          stMark = Year(DateAdd("yyyy", CDbl(I), CDate(m_Min)))
+    If I <> 0 Then
+      If iPts(I).X <> (X + W) Then
+        UserControl.Line (iPts(I).X, iPts(I).Y)-(iPts(I).X, pY2), ColorLine
       End If
-  End Select
-  'Debug.Print stMark
-  AddString stMark, sREC, m_Font1, ColorText
+    End If
+  End If
+  
+  If m_ValuesVisible = True Then
+    sREC.X = iPts(I).X - (tW / 2)
+    If m_ValueRotation < 340 Then sREC.X = iPts(I).X + (tH / 2)
+    If m_ValueLine = stOuter Then
+      If tW * (vPoints / Interval) > (W - 100) Then
+        sREC.Y = IIf(sPar = True, iPts(I).Y + tH, iPts(I).Y + 5)
+      Else
+        sREC.Y = iPts(I).Y + 5
+      End If
+    Else
+      sREC.Y = Y + H
+    End If
+      
+    Select Case m_ValueType
+      Case Is = eLetterValue
+          stMark = Chr$(Asc(m_Min) + (I))
+      Case Is = eNumValue
+          stMark = CLng(m_Min) + (I)
+      Case Is = eDateValue
+        If m_DateValueIntervalBy = byDay Then
+            stMark = DateAdd("d", CDbl(I), CDate(m_Min))
+        ElseIf m_DateValueIntervalBy = byMonth Then
+            stMark = Format$(DateAdd("m", CDbl(I), CDate(m_Min)), "MMMM-yyyy")
+        ElseIf m_DateValueIntervalBy = byYear Then
+            stMark = Year(DateAdd("yyyy", CDbl(I), CDate(m_Min)))
+        End If
+    End Select
+    
+    AddString2 stMark, sREC.X, sREC.Y, m_ValueRotation, ColorText
+  End If
   sPar = Not sPar
 Next I
   
 zEnd:
-  GdipDeletePen hPen
 
 End Sub
 
@@ -613,32 +699,11 @@ Private Function GetWindowsDPI() As Double
     End If
 End Function
 
-'Private Function IconCharCode(ByVal New_IconCharCode As String) As Long
-'    New_IconCharCode = UCase(Replace(New_IconCharCode, Space(1), vbNullString))
-'    New_IconCharCode = UCase(Replace(New_IconCharCode, "U+", "&H"))
-'    If Not VBA.Left$(New_IconCharCode, 2) = "&H" And Not IsNumeric(New_IconCharCode) Then
-'        IconCharCode = "&H" & New_IconCharCode
-'    Else
-'        IconCharCode = New_IconCharCode
-'    End If
-'End Function
-
 Private Sub InitGDI()
     Dim GdipStartupInput As GDIPlusStartupInput
     GdipStartupInput.GdiPlusVersion = 1&
     Call GdiplusStartup(GdipToken, GdipStartupInput, ByVal 0)
 End Sub
-
-'Private Function ReadValue(ByVal lProp As Long, Optional Default As Long) As Long
-'    Dim I       As Long
-'    For I = 0 To TLS_MINIMUM_AVAILABLE - 1
-'        If TlsGetValue(I) = lProp Then
-'            ReadValue = TlsGetValue(I + 1)
-'            Exit Function
-'        End If
-'    Next
-'    ReadValue = Default
-'End Function
 
 Private Function RGBA(ByVal RGBColor As Long, ByVal Opacity As Long) As Long
   If (RGBColor And &H80000000) Then RGBColor = GetSysColor(RGBColor And &HFF&)
@@ -652,11 +717,6 @@ Private Function RGBA(ByVal RGBColor As Long, ByVal Opacity As Long) As Long
       RGBA = RGBA Or (Opacity - 128&) * &H1000000 Or &H80000000
   End If
 End Function
-
-'Private Sub SafeRange(Value, Min, Max)
-'    If Value < Min Then Value = Min
-'    If Value > Max Then Value = Max
-'End Sub
 
 Private Function SetREC2(lpRect As RECT, ByVal X As Long, ByVal Y As Long, ByVal R As Long, ByVal B As Long) As Long
   lpRect.Left = X:    lpRect.Top = Y
@@ -682,7 +742,7 @@ Private Sub UserControl_InitProperties()
 'hFontCollection = ReadValue(&HFC)
 
   m_Enabled = True
-  m_Style = pHorizontal
+  'm_Style = pHorizontal
   m_BorderColor = &HFF8080
   m_BackColor = &H8000000F
   m_GradientColor1 = &HFF&
@@ -702,6 +762,11 @@ Private Sub UserControl_InitProperties()
   m_ValueType = eNumValue
   m_DateValueIntervalBy = byDay
   m_ColorSelector = &H0&
+  m_ValueLine = stOuter
+  m_ValuesVisible = True
+  m_ValueRotation = 0
+  m_BarThickness = 25
+  m_BarMargin = 10
 End Sub
 
 Private Sub UserControl_KeyDown(KeyCode As Integer, Shift As Integer)
@@ -755,13 +820,13 @@ End If
 If Button = vbLeftButton Then
   Select Case mActive
     Case Is = cmLeft
-      If X >= 10 And X <= (UserControl.ScaleWidth - 10) Then lPos = X
+      If X >= m_BarMargin And X <= (UserControl.ScaleWidth - m_BarMargin) Then lPos = X
       UserControl.MousePointer = vbSizeWE
     Case Is = cmRight
-      If X >= 10 And X <= (UserControl.ScaleWidth - 10) Then rPos = X
+      If X >= m_BarMargin And X <= (UserControl.ScaleWidth - m_BarMargin) Then rPos = X
       UserControl.MousePointer = vbSizeWE
     Case Is = cmBar
-      If X - (rBar / 2) >= 10 And X + (rBar / 2) <= (UserControl.ScaleWidth - 10) Then BarPos = X
+      If X - (rBar / 2) >= m_BarMargin And X + (rBar / 2) <= (UserControl.ScaleWidth - m_BarMargin) Then BarPos = X
       UserControl.MousePointer = vbSizeWE
   End Select
   Refresh
@@ -782,7 +847,7 @@ End Sub
 Private Sub UserControl_ReadProperties(PropBag As PropertyBag)
 With PropBag
   m_Enabled = .ReadProperty("Enabled", True)
-  m_Style = .ReadProperty("Style", 0)
+  'm_Style = .ReadProperty("Style", 0)
   m_BorderColor = .ReadProperty("BorderColor", &HFF8080)
   m_BackColor = .ReadProperty("BackColor", &H8000000F)
   m_GradientColor1 = .ReadProperty("GradientColor1", &HFF&)
@@ -802,12 +867,17 @@ With PropBag
   m_ValueType = .ReadProperty("ValueType", eNumValue)
   m_DateValueIntervalBy = .ReadProperty("DateValueIntervalBy", 0)
   m_ColorSelector = .ReadProperty("ColorSelector", &H0&)
+  m_ValueLine = .ReadProperty("ValueLine", 0)
+  m_ValuesVisible = .ReadProperty("ValuesVisible", True)
+  m_ValueRotation = .ReadProperty("ValueRotation", 0)
+  m_BarThickness = .ReadProperty("BarThickness", 25)
+  m_BarMargin = .ReadProperty("BarMargin", 10)
 End With
 
 End Sub
 
 Private Sub UserControl_Resize()
-  lPos = 10
+  lPos = m_BarMargin
   rPos = 60
 
 Refresh
@@ -824,7 +894,7 @@ End Sub
 Private Sub UserControl_WriteProperties(PropBag As PropertyBag)
 With PropBag
   Call .WriteProperty("Enabled", m_Enabled)
-  Call .WriteProperty("Style", m_Style)
+  'Call .WriteProperty("Style", m_Style)
   Call .WriteProperty("BorderColor", m_BorderColor)
   Call .WriteProperty("BackColor", m_BackColor)
   Call .WriteProperty("GradientColor1", m_GradientColor1)
@@ -844,7 +914,11 @@ With PropBag
   Call .WriteProperty("ValueType", m_ValueType)
   Call .WriteProperty("DateValueIntervalBy", m_DateValueIntervalBy)
   Call .WriteProperty("ColorSelector", m_ColorSelector)
-  
+  Call .WriteProperty("ValueLine", m_ValueLine)
+  Call .WriteProperty("ValuesVisible", m_ValuesVisible)
+  Call .WriteProperty("ValueRotation", m_ValueRotation)
+  Call .WriteProperty("BarThickness", m_BarThickness)
+  Call .WriteProperty("BarMargin", m_BarMargin)
 End With
   
 End Sub
@@ -996,18 +1070,18 @@ Public Property Let ColorLeftMark(ByVal New_Color As OLE_COLOR)
   Refresh
 End Property
 
-Public Property Get Style() As pStyle
-  Style = m_Style
-End Property
-
-Public Property Let Style(ByVal NewStyle As pStyle)
-  m_Style = NewStyle
-  PropertyChanged "Style"
-  UserControl_Resize
-End Property
+'Public Property Get Style() As pStyle
+'  Style = m_Style
+'End Property
+'
+'Public Property Let Style(ByVal NewStyle As pStyle)
+'  m_Style = NewStyle
+'  PropertyChanged "Style"
+'  UserControl_Resize
+'End Property
 
 Public Property Get Version() As String
-Version = App.Major & "." & App.Minor & "." & App.Revision
+Version = VERS  'App.Major & "." & App.Minor & "." & App.Revision
 End Property
 
 Public Property Get Visible() As Boolean
@@ -1082,18 +1156,6 @@ Public Property Get MarkRValue() As String
   MarkRValue = sRMark
 End Property
 
-'Public Property Let MarkLValue(ByVal NewMarkLValue As String)
-'  m_MarkLValue = NewMarkLValue
-'  PropertyChanged "MarkLValue"
-'  SetMarkValues
-'End Property
-'
-'Public Property Let MarkRValue(ByVal NewMarkRValue As String)
-'  m_MarkRValue = NewMarkRValue
-'  PropertyChanged "MarkRValue"
-'  SetMarkValues
-'End Property
-
 Public Function SetMarkLValue(ByVal NewMarkLValue As String)
   m_MarkLValue = NewMarkLValue
   SetMarkValues
@@ -1113,3 +1175,54 @@ Public Property Let ColorSelector(ByVal NewColorSelector As OLE_COLOR)
   PropertyChanged "ColorSelector"
   Refresh
 End Property
+
+Public Property Get ValueLine() As eStyleLine
+  ValueLine = m_ValueLine
+End Property
+
+Public Property Let ValueLine(ByVal NewValueLine As eStyleLine)
+  m_ValueLine = NewValueLine
+  PropertyChanged "ValueLine"
+  Refresh
+End Property
+
+Public Property Get ValuesVisible() As Boolean
+  ValuesVisible = m_ValuesVisible
+End Property
+
+Public Property Let ValuesVisible(ByVal NewValuesVisible As Boolean)
+  m_ValuesVisible = NewValuesVisible
+  PropertyChanged "ValuesVisible"
+  Refresh
+End Property
+
+Public Property Get ValueRotation() As Single
+  ValueRotation = 360 - m_ValueRotation
+End Property
+
+Public Property Let ValueRotation(ByVal NewValueRotation As Single)
+  m_ValueRotation = 360 - NewValueRotation
+  PropertyChanged "ValueRotation"
+  Refresh
+End Property
+
+Public Property Get BarThickness() As Long
+  BarThickness = m_BarThickness
+End Property
+
+Public Property Let BarThickness(ByVal NewBarThickness As Long)
+  m_BarThickness = NewBarThickness
+  PropertyChanged "BarThickness"
+  Refresh
+End Property
+
+Public Property Get BarMargin() As Long
+  BarMargin = m_BarMargin
+End Property
+
+Public Property Let BarMargin(ByVal NewBarMargin As Long)
+  m_BarMargin = NewBarMargin
+  PropertyChanged "BarMargin"
+  Refresh
+End Property
+
